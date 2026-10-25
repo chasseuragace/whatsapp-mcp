@@ -1,86 +1,115 @@
 # Docker Setup for WhatsApp MCP
 
-This setup runs the WhatsApp MCP server in Docker containers with persistent storage.
+Runs the WhatsApp bridge and the MCP server as two long-running containers. Every MCP client
+(Claude Code, Claude Desktop, Cursor, ...) connects to the same server by URL, so connecting a
+client never starts a new container.
 
 ## Architecture
 
-- **whatsapp-bridge**: Go application that connects to WhatsApp via QR code, stores messages in SQLite
-- **whatsapp-mcp-server**: Python MCP server that provides tools for Claude to interact with WhatsApp
-- **whatsapp-store volume**: Docker volume that persists SQLite databases and media files across container restarts
+- **whatsapp-bridge**: Go app that logs in to WhatsApp (QR code) and stores messages in SQLite.
+- **whatsapp-mcp-server**: Python MCP server, served over Streamable HTTP at
+  `http://localhost:8766/mcp`.
+- **whatsapp-store volume**: persists the login session, message history and downloaded media.
+- **Shared files folder** (`~/WhatsAppFiles` by default): mounted into both containers at the same
+  path as on your Mac. Put files here to send them; downloaded media is copied here too.
 
-## Prerequisites
+Both ports are bound to `127.0.0.1`, so nothing else on your network can reach them. The MCP
+server also rejects requests whose `Host` or `Origin` isn't localhost, which blocks web pages from
+reaching it through DNS rebinding.
 
-- Docker
-- Docker Compose
+## Quick start
 
-## Quick Start
-
-1. **Build and start the containers:**
+1. **Build and start** (from this folder):
    ```bash
-   docker-compose up -d --build
+   docker compose up -d --build
    ```
 
-2. **View the bridge logs to get the QR code:**
+2. **Log in**: show the QR code and scan it in WhatsApp → Settings → Linked devices:
    ```bash
-   docker-compose logs -f whatsapp-bridge
+   docker compose logs -f whatsapp-bridge
+   ```
+   If the session has expired (the log says `Device logged out`), restart the bridge to get a new
+   QR code: `docker compose restart whatsapp-bridge`.
+
+3. **Connect your MCP clients** to `http://localhost:8766/mcp`:
+
+   **Claude Code**
+   ```bash
+   claude mcp add --transport http --scope user whatsapp http://localhost:8766/mcp
    ```
 
-3. **Scan the QR code** with your WhatsApp mobile app to authenticate
-
-4. **Configure Claude Desktop** to use the Dockerized MCP server:
+   **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`).
+   Claude Desktop only launches local commands, so use `mcp-remote` to connect to the URL:
    ```json
    {
      "mcpServers": {
        "whatsapp": {
-         "command": "docker",
-         "args": [
-           "compose",
-           "run",
-           "--rm",
-           "whatsapp-mcp-server"
-         ],
-         "env": {
-           "WHATSAPP_API_BASE_URL": "http://host.docker.internal:8080/api"
-         }
+         "command": "npx",
+         "args": ["-y", "mcp-remote", "http://localhost:8766/mcp"]
        }
      }
    }
    ```
-   Save this to `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-   **Note**: We use `host.docker.internal` so the MCP server container can reach the bridge running on the host network.
+   **Cursor** (`~/.cursor/mcp.json`)
+   ```json
+   {
+     "mcpServers": {
+       "whatsapp": { "url": "http://localhost:8766/mcp" }
+     }
+   }
+   ```
 
-5. **Restart Claude Desktop**
+   Do **not** use `docker compose run ...` as the client command: that creates a new container
+   every time the client starts.
+
+## Sending and receiving files
+
+The containers can't see your Mac's files, except the shared folder.
+
+- **Sending**: copy the file into `~/WhatsAppFiles` and pass its full path
+  (e.g. `/Users/you/WhatsAppFiles/photo.jpg`) to `send_file` / `send_audio_message`.
+- **Downloading**: `download_media` copies the file to `~/WhatsAppFiles/downloads/<chat>/` and
+  returns that path.
+
+To use a different folder, set `WHATSAPP_FILES_DIR` (an absolute path) in your shell or in a
+`.env` file next to `docker-compose.yml`, then run `docker compose up -d`.
 
 ## Persistence
 
-The `whatsapp-store` Docker volume persists:
-- `store/whatsapp.db` - WhatsApp session/authentication data
-- `store/messages.db` - Message history
-- `store/{chat_jid}/` - Media files for each chat
+The `whatsapp-store` volume keeps:
+- `whatsapp.db`: WhatsApp login session
+- `messages.db`: message history
+- `{chat_jid}/`: downloaded media
 
-This means your authentication and message history will survive container restarts.
+These survive container restarts and rebuilds. `docker compose down -v` deletes them.
 
 ## Commands
 
-- **Start containers**: `docker-compose up -d`
-- **Stop containers**: `docker-compose down`
-- **View logs**: `docker-compose logs -f [service-name]`
-- **Rebuild**: `docker-compose up -d --build`
-- **Remove volumes** (deletes all data): `docker-compose down -v`
+- **Start**: `docker compose up -d`
+- **Stop**: `docker compose down`
+- **Logs**: `docker compose logs -f [whatsapp-bridge|whatsapp-mcp-server]`
+- **Rebuild after code changes**: `docker compose up -d --build`
+- **Delete all data** (login and history): `docker compose down -v`
+
+## Configuration (MCP server environment)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` (`streamable-http` in Compose) | `stdio`, `streamable-http` or `sse` |
+| `MCP_HOST` / `MCP_PORT` | `127.0.0.1` / `8000` | Listen address for HTTP transports |
+| `MCP_ALLOWED_HOSTS` | `localhost:*,127.0.0.1:*,[::1]:*` | Accepted `Host` headers (comma-separated) |
+| `WHATSAPP_API_BASE_URL` | `http://localhost:8080/api` | Bridge REST API |
+| `MESSAGES_DB_PATH` | `../whatsapp-bridge/store/messages.db` | Message database |
+| `WHATSAPP_FILES_DIR` | unset (`~/WhatsAppFiles` in Compose) | Shared folder for sending/downloading |
+| `WHATSAPP_TMP_DIR` | system temp (`/app/store/tmp` in Compose) | Where converted voice notes are written |
 
 ## Troubleshooting
 
-### Bridge not connecting
-- Check logs: `docker-compose logs whatsapp-bridge`
-- Ensure the QR code was scanned within the time limit
-- You may need to re-authenticate after ~20 days
-
-### MCP server can't reach bridge
-- The MCP server uses `WHATSAPP_API_BASE_URL` environment variable
-- In Docker Compose, it's set to `http://whatsapp-bridge:8080/api` (internal network)
-- For Claude Desktop config, use `http://host.docker.internal:8080/api`
-
-### Data not persisting
-- Check volume exists: `docker volume ls`
-- Inspect volume: `docker volume inspect whatsapp-mcp_whatsapp-store`
+- **Client can't connect**: check `docker compose ps` shows both containers running, and that the
+  URL is `http://localhost:8766/mcp`.
+- **`421 Misdirected Request`**: the client used a hostname other than `localhost`/`127.0.0.1`.
+  Add it to `MCP_ALLOWED_HOSTS`.
+- **Bridge not connecting / logged out**: `docker compose logs whatsapp-bridge`; restart the bridge
+  and rescan the QR code. WhatsApp unlinks devices that have been inactive for a few weeks.
+- **"Media file not found"**: the file isn't inside the shared folder.

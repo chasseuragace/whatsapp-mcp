@@ -78,7 +78,11 @@ def convert_to_opus_ogg_temp(input_file, bitrate="32k", sample_rate=24000):
         RuntimeError: If the ffmpeg conversion fails
     """
     # Create a temporary file with .ogg extension
-    temp_file = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False)
+    # WHATSAPP_TMP_DIR lets Docker put this file on a volume the bridge container can also read.
+    temp_dir = os.environ.get("WHATSAPP_TMP_DIR") or None
+    if temp_dir:
+        os.makedirs(temp_dir, exist_ok=True)
+    temp_file = tempfile.NamedTemporaryFile(suffix=".ogg", delete=False, dir=temp_dir)
     temp_file.close()
     
     try:

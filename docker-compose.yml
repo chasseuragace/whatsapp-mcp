@@ -1,14 +1,29 @@
+# One long-running bridge + one long-running MCP server. Every MCP client connects to
+# http://localhost:8766/mcp, so connecting a client never starts a new container.
+#
+# Ports are bound to 127.0.0.1 only: nothing else on your network can reach them.
+#
+# WHATSAPP_FILES_DIR (default ~/WhatsAppFiles) is shared with both containers at the same
+# path as on your Mac, so files in it can be sent and downloaded media is copied there.
+
+x-files-dir: &files-dir ${WHATSAPP_FILES_DIR:-${HOME}/WhatsAppFiles}
+
 services:
   whatsapp-bridge:
     build:
       context: ./whatsapp-bridge
-      dockerfile: Dockerfile
     container_name: whatsapp-bridge
     ports:
-      - "8080:8080"
+      # Optional: lets a natively-run MCP server or curl reach the bridge from the host.
+      - "127.0.0.1:8080:8080"
     volumes:
-      # Persist store directory (contains SQLite databases and media files)
+      # SQLite databases (login session + message history) and downloaded media
       - whatsapp-store:/app/store
+      - type: bind
+        source: *files-dir
+        target: *files-dir
+        bind:
+          create_host_path: true
     restart: unless-stopped
     environment:
       - TZ=UTC
@@ -18,22 +33,30 @@ services:
   whatsapp-mcp-server:
     build:
       context: ./whatsapp-mcp-server
-      dockerfile: Dockerfile
     container_name: whatsapp-mcp-server
     depends_on:
       - whatsapp-bridge
     environment:
-      # Point to the bridge service instead of localhost
       - WHATSAPP_API_BASE_URL=http://whatsapp-bridge:8080/api
       - MESSAGES_DB_PATH=/app/store/messages.db
+      - MCP_TRANSPORT=streamable-http
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+      - WHATSAPP_FILES_DIR=${WHATSAPP_FILES_DIR:-${HOME}/WhatsAppFiles}
+      # Converted voice notes go on the shared store volume so the bridge can read them
+      - WHATSAPP_TMP_DIR=/app/store/tmp
+    ports:
+      - "127.0.0.1:8766:8000"
     volumes:
-      # Mount the same store volume to access the database
       - whatsapp-store:/app/store
+      - type: bind
+        source: *files-dir
+        target: *files-dir
+        bind:
+          create_host_path: true
     restart: unless-stopped
     networks:
       - whatsapp-network
-    # This service will be used via stdio by Claude/Cursor, not as a long-running HTTP server
-    # So we don't expose ports and it will be started on demand
 
 volumes:
   whatsapp-store:

@@ -1,5 +1,9 @@
+import os
+import re
+import shutil
 from typing import List, Dict, Any, Optional
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from whatsapp import (
     search_contacts as whatsapp_search_contacts,
     list_messages as whatsapp_list_messages,
@@ -15,10 +19,50 @@ from whatsapp import (
     download_media as whatsapp_download_media
 )
 
-# Initialize FastMCP server
-mcp = FastMCP("whatsapp")
+# Transport: "stdio" (default, one process per client), or "streamable-http" / "sse"
+# (one long-running server that every client connects to by URL).
+TRANSPORTS = ("stdio", "streamable-http", "sse")
+MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
+if MCP_TRANSPORT not in TRANSPORTS:
+    raise SystemExit(f"MCP_TRANSPORT must be one of {TRANSPORTS}, got {MCP_TRANSPORT!r}")
 
-@mcp.tool()
+# Only accept HTTP requests addressed to localhost. This blocks DNS-rebinding attacks from
+# web pages even when the server listens on 0.0.0.0 inside Docker.
+_allowed_hosts = [
+    h.strip()
+    for h in os.environ.get("MCP_ALLOWED_HOSTS", "localhost:*,127.0.0.1:*,[::1]:*").split(",")
+    if h.strip()
+]
+mcp = FastMCP(
+    "whatsapp",
+    host=os.environ.get("MCP_HOST", "127.0.0.1"),
+    port=int(os.environ.get("MCP_PORT", "8000")),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=[f"http://{h}" for h in _allowed_hosts],
+    ),
+)
+
+# In Docker, a host folder mounted at the same path in both containers. Downloaded media is
+# copied here so the client (running on the host) can open it.
+WHATSAPP_FILES_DIR = os.environ.get("WHATSAPP_FILES_DIR")
+
+
+def _copy_to_files_dir(file_path: str, chat_jid: str) -> str:
+    safe_chat = re.sub(r"[^A-Za-z0-9._-]", "_", chat_jid)
+    dest_dir = os.path.join(WHATSAPP_FILES_DIR, "downloads", safe_chat)
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, os.path.basename(file_path))
+    shutil.copy2(file_path, dest)
+    return dest
+
+
+# Tools return dataclasses (Chat, Message, ...) rather than the dicts their type hints promise,
+# so skip structured-output validation and return results as JSON text (as mcp 1.6 did).
+tool = lambda: mcp.tool(structured_output=False)
+
+@tool()
 def search_contacts(query: str) -> List[Dict[str, Any]]:
     """Search WhatsApp contacts by name or phone number.
     
@@ -28,7 +72,7 @@ def search_contacts(query: str) -> List[Dict[str, Any]]:
     contacts = whatsapp_search_contacts(query)
     return contacts
 
-@mcp.tool()
+@tool()
 def list_messages(
     after: Optional[str] = None,
     before: Optional[str] = None,
@@ -69,7 +113,7 @@ def list_messages(
     )
     return messages
 
-@mcp.tool()
+@tool()
 def list_chats(
     query: Optional[str] = None,
     limit: int = 20,
@@ -95,7 +139,7 @@ def list_chats(
     )
     return chats
 
-@mcp.tool()
+@tool()
 def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]:
     """Get WhatsApp chat metadata by JID.
     
@@ -106,7 +150,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> Dict[str, Any]
     chat = whatsapp_get_chat(chat_jid, include_last_message)
     return chat
 
-@mcp.tool()
+@tool()
 def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     """Get WhatsApp chat metadata by sender phone number.
     
@@ -116,7 +160,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Dict[str, Any]:
     chat = whatsapp_get_direct_chat_by_contact(sender_phone_number)
     return chat
 
-@mcp.tool()
+@tool()
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str, Any]]:
     """Get all WhatsApp chats involving the contact.
     
@@ -128,7 +172,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> List[Dict[str
     chats = whatsapp_get_contact_chats(jid, limit, page)
     return chats
 
-@mcp.tool()
+@tool()
 def get_last_interaction(jid: str) -> str:
     """Get most recent WhatsApp message involving the contact.
     
@@ -138,7 +182,7 @@ def get_last_interaction(jid: str) -> str:
     message = whatsapp_get_last_interaction(jid)
     return message
 
-@mcp.tool()
+@tool()
 def get_message_context(
     message_id: str,
     before: int = 5,
@@ -154,7 +198,7 @@ def get_message_context(
     context = whatsapp_get_message_context(message_id, before, after)
     return context
 
-@mcp.tool()
+@tool()
 def send_message(
     recipient: str,
     message: str
@@ -183,7 +227,7 @@ def send_message(
         "message": status_message
     }
 
-@mcp.tool()
+@tool()
 def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
     
@@ -203,7 +247,7 @@ def send_file(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@tool()
 def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
     
@@ -221,7 +265,7 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         "message": status_message
     }
 
-@mcp.tool()
+@tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
     
@@ -233,7 +277,16 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
         A dictionary containing success status, a status message, and the file path if successful
     """
     file_path = whatsapp_download_media(message_id, chat_jid)
-    
+
+    if file_path and WHATSAPP_FILES_DIR:
+        try:
+            file_path = _copy_to_files_dir(file_path, chat_jid)
+        except OSError as e:
+            return {
+                "success": False,
+                "message": f"Downloaded, but could not copy into {WHATSAPP_FILES_DIR}: {e}"
+            }
+
     if file_path:
         return {
             "success": True,
@@ -247,5 +300,4 @@ def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:
         }
 
 if __name__ == "__main__":
-    # Initialize and run the server
-    mcp.run(transport='stdio')
+    mcp.run(transport=MCP_TRANSPORT)

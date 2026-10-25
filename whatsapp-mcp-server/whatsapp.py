@@ -10,6 +10,15 @@ import audio
 
 WHATSAPP_API_BASE_URL = os.environ.get("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
 MESSAGES_DB_PATH = os.environ.get("MESSAGES_DB_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db'))
+# In Docker, the only host folder both containers can see (mounted at the same path as on the host).
+WHATSAPP_FILES_DIR = os.environ.get("WHATSAPP_FILES_DIR")
+
+
+def _file_not_found(media_path: str) -> str:
+    message = f"Media file not found: {media_path}"
+    if WHATSAPP_FILES_DIR:
+        message += f". Only files inside {WHATSAPP_FILES_DIR} can be sent; copy the file there first."
+    return message
 
 # Debug: print the database path being used
 import sys
@@ -666,7 +675,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             return False, "Media path must be provided"
         
         if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+            return False, _file_not_found(media_path)
         
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -700,11 +709,13 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             return False, "Media path must be provided"
         
         if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+            return False, _file_not_found(media_path)
 
+        converted_path = None
         if not media_path.endswith(".ogg"):
             try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
+                converted_path = audio.convert_to_opus_ogg_temp(media_path)
+                media_path = converted_path
             except Exception as e:
                 return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
         
@@ -714,7 +725,12 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
         
-        response = requests.post(url, json=payload)
+        try:
+            response = requests.post(url, json=payload)
+        finally:
+            # The bridge has read the converted file by the time it responds.
+            if converted_path and os.path.exists(converted_path):
+                os.unlink(converted_path)
         
         # Check if the request was successful
         if response.status_code == 200:

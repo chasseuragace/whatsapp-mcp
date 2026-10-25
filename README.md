@@ -16,6 +16,8 @@ Here's an example of what you can do when it's connected to Claude.
 
 ## Installation
 
+> **Docker:** to run the bridge and a single shared MCP server in containers (one server for all clients, connected by URL), see [DOCKER_SETUP.md](DOCKER_SETUP.md).
+
 ### Prerequisites
 
 - Go
