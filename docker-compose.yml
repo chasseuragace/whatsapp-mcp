@@ -45,6 +45,8 @@ services:
       - WHATSAPP_FILES_DIR=${WHATSAPP_FILES_DIR:-${HOME}/WhatsAppFiles}
       # Converted voice notes go on the shared store volume so the bridge can read them
       - WHATSAPP_TMP_DIR=/app/store/tmp
+      # Piper TTS server on the Mac (started by `say`), used by send_self_audio
+      - PIPER_URL=${PIPER_URL:-http://host.docker.internal:5000}
     ports:
       - "127.0.0.1:8766:8000"
     volumes:

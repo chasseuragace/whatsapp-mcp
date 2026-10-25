@@ -14,6 +14,30 @@ MESSAGES_DB_PATH = os.environ.get("MESSAGES_DB_PATH", os.path.join(os.path.dirna
 WHATSAPP_FILES_DIR = os.environ.get("WHATSAPP_FILES_DIR")
 
 
+# The bridge's login database, which records the logged-in account.
+WHATSAPP_DB_PATH = os.environ.get("WHATSAPP_DB_PATH", os.path.join(os.path.dirname(MESSAGES_DB_PATH), "whatsapp.db"))
+
+
+def get_self_jid() -> Optional[str]:
+    """Return the logged-in account's JID (e.g. 123456789@s.whatsapp.net), or None if not logged in."""
+    override = os.environ.get("WHATSAPP_SELF_JID")
+    if override:
+        return override
+    try:
+        conn = sqlite3.connect(f"file:{WHATSAPP_DB_PATH}?mode=ro", uri=True)
+        try:
+            row = conn.execute("SELECT jid FROM whatsmeow_device LIMIT 1").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    # Device JIDs look like "<number>:<device>@s.whatsapp.net"; drop the device part.
+    user, _, server = row[0].partition("@")
+    return f"{user.split(':')[0]}@{server}"
+
+
 def _file_not_found(media_path: str) -> str:
     message = f"Media file not found: {media_path}"
     if WHATSAPP_FILES_DIR:

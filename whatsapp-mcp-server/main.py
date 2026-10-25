@@ -16,8 +16,10 @@ from whatsapp import (
     send_message as whatsapp_send_message,
     send_file as whatsapp_send_file,
     send_audio_message as whatsapp_audio_voice_message,
-    download_media as whatsapp_download_media
+    download_media as whatsapp_download_media,
+    get_self_jid as whatsapp_get_self_jid,
 )
+import tts
 
 # Transport: "stdio" (default, one process per client), or "streamable-http" / "sse"
 # (one long-running server that every client connects to by URL).
@@ -264,6 +266,32 @@ def send_audio_message(recipient: str, media_path: str) -> Dict[str, Any]:
         "success": success,
         "message": status_message
     }
+
+@tool()
+def send_self_audio(text: str) -> Dict[str, Any]:
+    """Speak text aloud with the local Piper TTS voice and send it to yourself (your own WhatsApp
+    number, the "Message yourself" chat) as a WhatsApp voice message.
+
+    Args:
+        text: The text to speak (uses the voice the Piper server was started with)
+    """
+    if not text or not text.strip():
+        return {"success": False, "message": "Text must not be empty"}
+
+    self_jid = whatsapp_get_self_jid()
+    if not self_jid:
+        return {"success": False, "message": "Could not find your WhatsApp account. Is the bridge logged in?"}
+
+    try:
+        wav_path = tts.synthesize_to_wav(text)
+    except tts.PiperError as e:
+        return {"success": False, "message": str(e)}
+
+    try:
+        success, status_message = whatsapp_audio_voice_message(self_jid, wav_path)
+    finally:
+        os.unlink(wav_path)
+    return {"success": success, "message": status_message}
 
 @tool()
 def download_media(message_id: str, chat_jid: str) -> Dict[str, Any]:

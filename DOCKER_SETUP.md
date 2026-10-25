@@ -75,6 +75,16 @@ The containers can't see your Mac's files, except the shared folder.
 To use a different folder, set `WHATSAPP_FILES_DIR` (an absolute path) in your shell or in a
 `.env` file next to `docker-compose.yml`, then run `docker compose up -d`.
 
+## Voice messages to yourself (`send_self_audio`)
+
+`send_self_audio(text)` speaks the text with your local Piper TTS server (the one the `say`
+command starts on `localhost:5000`) and sends it to your own number as a WhatsApp voice note.
+
+- The Piper server must be running on the Mac. If the tool says it can't reach it, run
+  `say hello` once to start it.
+- Your own number is read from the bridge's login database, so nothing needs configuring.
+  Set `WHATSAPP_SELF_JID` to override it.
+
 ## Persistence
 
 The `whatsapp-store` volume keeps:
@@ -102,6 +112,8 @@ These survive container restarts and rebuilds. `docker compose down -v` deletes 
 | `WHATSAPP_API_BASE_URL` | `http://localhost:8080/api` | Bridge REST API |
 | `MESSAGES_DB_PATH` | `../whatsapp-bridge/store/messages.db` | Message database |
 | `WHATSAPP_FILES_DIR` | unset (`~/WhatsAppFiles` in Compose) | Shared folder for sending/downloading |
+| `PIPER_URL` | `http://localhost:5000` (`http://host.docker.internal:5000` in Compose) | Piper TTS server for `send_self_audio` |
+| `WHATSAPP_SELF_JID` | read from the bridge's `whatsapp.db` | Your own JID, for `send_self_audio` |
 | `WHATSAPP_TMP_DIR` | system temp (`/app/store/tmp` in Compose) | Where converted voice notes are written |
 
 ## Troubleshooting
