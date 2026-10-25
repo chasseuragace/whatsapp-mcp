@@ -173,19 +173,58 @@ func (store *MessageStore) GetChats() (map[string]time.Time, error) {
 }
 
 // Extract text content from a message
+// unwrapMessage peels off the containers WhatsApp wraps real content in: messages sent from
+// your other devices, disappearing messages, view-once media and documents with a caption.
+// Without this, those messages look empty and are skipped.
+func unwrapMessage(msg *waProto.Message) *waProto.Message {
+	for i := 0; i < 5 && msg != nil; i++ {
+		var inner *waProto.Message
+		switch {
+		case msg.GetDeviceSentMessage() != nil:
+			inner = msg.GetDeviceSentMessage().GetMessage()
+		case msg.GetEphemeralMessage() != nil:
+			inner = msg.GetEphemeralMessage().GetMessage()
+		case msg.GetViewOnceMessage() != nil:
+			inner = msg.GetViewOnceMessage().GetMessage()
+		case msg.GetViewOnceMessageV2() != nil:
+			inner = msg.GetViewOnceMessageV2().GetMessage()
+		case msg.GetViewOnceMessageV2Extension() != nil:
+			inner = msg.GetViewOnceMessageV2Extension().GetMessage()
+		case msg.GetDocumentWithCaptionMessage() != nil:
+			inner = msg.GetDocumentWithCaptionMessage().GetMessage()
+		}
+		if inner == nil {
+			break
+		}
+		msg = inner
+	}
+	return msg
+}
+
 func extractTextContent(msg *waProto.Message) string {
+	msg = unwrapMessage(msg)
 	if msg == nil {
 		return ""
 	}
 
-	// Try to get text content
 	if text := msg.GetConversation(); text != "" {
 		return text
-	} else if extendedText := msg.GetExtendedTextMessage(); extendedText != nil {
+	}
+	if extendedText := msg.GetExtendedTextMessage(); extendedText != nil {
 		return extendedText.GetText()
 	}
 
-	// For now, we're ignoring non-text messages
+	// Captions on media messages
+	if img := msg.GetImageMessage(); img != nil {
+		return img.GetCaption()
+	}
+	if vid := msg.GetVideoMessage(); vid != nil {
+		return vid.GetCaption()
+	}
+	if doc := msg.GetDocumentMessage(); doc != nil {
+		return doc.GetCaption()
+	}
+
 	return ""
 }
 
@@ -373,6 +412,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 
 // Extract media info from a message
 func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, url string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
+	msg = unwrapMessage(msg)
 	if msg == nil {
 		return "", "", "", nil, nil, nil, 0
 	}
@@ -1053,15 +1093,8 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Extract text content
-				var content string
-				if msg.Message.Message != nil {
-					if conv := msg.Message.Message.GetConversation(); conv != "" {
-						content = conv
-					} else if ext := msg.Message.Message.GetExtendedTextMessage(); ext != nil {
-						content = ext.GetText()
-					}
-				}
+				// Extract text content (including media captions)
+				content := extractTextContent(msg.Message.Message)
 
 				// Extract media info
 				var mediaType, filename, url string
